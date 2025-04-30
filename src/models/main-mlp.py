@@ -38,17 +38,6 @@ class MLPModel(nnx.Module):
     @nnx.vmap(in_axes=(None, 0), out_axes=0)
     def create_models(self, key: jax.Array):
         return MLP(hidden_dims=self.hidden_dims, rngs=nnx.Rngs(key))
-    
-    # def create_models(self, keys):
-    #     models = []
-    #     for key in keys:
-    #         models.append(MLP(hidden_dims=self.hidden_dims, rngs=nnx.Rngs(key), activation=self.activation))
-    #     return models
-    
-    # def forward(self, x):
-    #     for model in self.models:
-    #         x = model(x)
-    #     return x 
 
     def __call__(self, x):
         @nnx.scan(in_axes=(0, nnx.Carry), out_axes=nnx.Carry)
@@ -61,13 +50,18 @@ class MLPModel(nnx.Module):
         return z_out
 
 if __name__ == '__main__':
-    rngs = nnx.Rngs(0)
-    in_dims = 10
-    hidden_dims = 20
-    out_dims = 5
-    num_mlps = 3
+    # rngs = nnx.Rngs(0)
+    # in_dims = 10
+    # hidden_dims = 20
+    # out_dims = 5
+    # num_mlps = 3
 
-    x = jax.random.normal(rngs.params(), (32, in_dims))
-    model = MLPModel(in_dims, hidden_dims, out_dims, num_mlps, rngs)
-    y = model(x)
-    print(y.shape)  # Should be (32, out_dims)
+    # x = jax.random.normal(rngs.params(), (32, in_dims))
+    # model = MLPModel(in_dims, hidden_dims, out_dims, num_mlps, rngs)
+    # y = model(x)
+    # print(y.shape)  # Should be (32, out_dims)
+    data_dict = jnp.load('./data/nn_training_data.npy', allow_pickle=True).item() # item to get dict 
+    # concatenate 
+    dct = {}
+    data = jnp.concat(data_dict.values(), axis=1)
+    print(data.shape)

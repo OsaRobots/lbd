@@ -12,3 +12,4 @@ wheels/
 *.lock
 .python-version
 .parquet 
+*.npy

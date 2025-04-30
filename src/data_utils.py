@@ -1,20 +1,23 @@
 import polars as pl
 import polars.selectors as cs 
+import jax.numpy as jnp 
 from inspect import signature
 from typing import Callable
+import jax.nn 
 
-def list_eval_ref(
-    listcol: pl.Expr | str,
-    op: Callable[..., pl.Expr],
-    *ref_cols: str | pl.Expr,
-):
-    if len(ref_cols)==0:
-        ref_cols = tuple([x for x in signature(op).parameters.keys()][1:])
+# def list_eval_ref(
     
-    args_to_op = [pl.element().struct[0].explode()] + [
-        pl.element().struct[i + 1] for i in range(len(ref_cols))
-    ]
-    return pl.concat_list(pl.struct(listcol, *ref_cols)).list.eval(op(*args_to_op))
+#     listcol: pl.Expr | str,
+#     op: Callable[..., pl.Expr],
+#     *ref_cols: str | pl.Expr,
+# ):
+#     if len(ref_cols)==0:
+#         ref_cols = tuple([x for x in signature(op).parameters.keys()][1:])
+    
+#     args_to_op = [pl.element().struct[0].explode()] + [
+#         pl.element().struct[i + 1] for i in range(len(ref_cols))
+#     ]
+#     return pl.concat_list(pl.struct(listcol, *ref_cols)).list.eval(op(*args_to_op))
 
 def processing(df: pl.DataFrame):
     df = df.sort(pl.col('subjectID', 'trial'))
@@ -100,11 +103,13 @@ def learning_setup(df: pl.DataFrame):
 
     return feature_dict
     # line up so that weight1 is always 1 and weight 2 is always 2  
-    
+def save_training_data(feature_dict):
+    jnp.save('./data/nn_training_data', feature_dict)
 
-
-if __name__ == '__main__':
+def main():
     df = pl.read_csv('./data/exp1_banditData.csv', null_values='NA')
     feature_dict = learning_setup(df)
-    print(feature_dict['state_feat1'].shape)
-    #train_df, grouped_chosen_ranks = processing(df)
+    one_hots = jax.nn.one_hot(feature_dict['chosenArm'] - 1, 20).squeeze(1)
+    print(one_hots.mean(axis=0))
+if __name__ == '__main__':
+    main()
