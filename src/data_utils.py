@@ -3,6 +3,7 @@ import polars.selectors as cs
 import jax.numpy as jnp 
 import jax.nn 
 import numpy as np
+import tensorflow as tf 
 from typing import List, Tuple, Dict, Any 
 
 def processing(df: pl.DataFrame):
@@ -91,8 +92,7 @@ def prepare_model_data(df: pl.DataFrame) -> Tuple[List[Dict[str, Any]], List[Dic
     mlp_data = []
 
     # default padding values for the t=0 step (no prior info)
-    # TODO: action padding? is -1 fine if we eventually one-hot?
-    default_action_pad_idx = -1 # this is fine since actions are 1-indexed 
+    default_action_pad_idx = jnp.zeros(shape=(20,)) 
     default_reward_pad = 0.0
     default_flag_pad = 0.0 # no reward present before trial 1
 
@@ -111,30 +111,32 @@ def prepare_model_data(df: pl.DataFrame) -> Tuple[List[Dict[str, Any]], List[Dic
         # state features
         s_sequence = np.concatenate([np_state_feat1, np_state_feat2], axis=1) # Shape (T, 2 * num_arms)
         target_a_sequence = np_chosen_arm_t - 1 # Shape (T,), -1 to 0-index for eventual one-hot
+        target_a_sequence = jax.nn.one_hot(target_a_sequence, num_classes=20)
 
         # roll forward to get prev features 
-        a_prev_sequence = np.roll(target_a_sequence, shift=1) #
+        a_prev_sequence = jnp.roll(target_a_sequence, shift=1, axis=0) 
         r_prev_sequence = np.roll(np_reward_t, shift=1)
         flag_prev_sequence = np.roll(np_training_phase_flag_t, shift=1)
 
+        if subject_id == (2,):
+            print(a_prev_sequence)
         # pad rolled sequences
-        a_prev_sequence[0] = default_action_pad_idx 
+        a_prev_sequence.at[0].set(default_action_pad_idx)
         r_prev_sequence[0] = default_reward_pad
         flag_prev_sequence[0] = default_flag_pad
 
         # reshape for eventual concatenation. shapes will be (T, 1)
-        a_prev_sequence = a_prev_sequence[:, np.newaxis]
+        # a_prev_sequence = a_prev_sequence[:, np.newaxis]
         r_prev_sequence = r_prev_sequence[:, np.newaxis]     
         flag_prev_sequence = flag_prev_sequence[:, np.newaxis] 
 
-        # store subject's data (convert final arrays to JAX)
         rnn_subject_data = {
             "subjectID": subject_id,
-            "states": jnp.array(s_sequence),              # Input s_t
-            "prev_actions": jnp.array(a_prev_sequence),   # Input a_{t-1} (indices)
-            "prev_rewards": jnp.array(r_prev_sequence),   # Input r_{t-1}
-            "prev_reward_flags": jnp.array(flag_prev_sequence), # Input flag_{t-1}
-            "target_actions": jnp.array(target_a_sequence),# Target a_t (indices)
+            "states": s_sequence,              # Input s_t
+            "prev_actions": np.asarray(a_prev_sequence),   # Input a_{t-1} (indices)
+            "prev_rewards": r_prev_sequence,   # Input r_{t-1}
+            "prev_reward_flags": flag_prev_sequence, # Input flag_{t-1}
+            "target_actions": np.asarray(target_a_sequence),# Target a_t (indices)
             # "train_phase_length": train_phase_len,
             # "seq_length": seq_len,
         }
@@ -151,16 +153,68 @@ def prepare_model_data(df: pl.DataFrame) -> Tuple[List[Dict[str, Any]], List[Dic
 
         mlp_subject_data = {
             "subjectID": subject_id,
-            "mlp_inputs": jnp.array(mlp_input_sequence),    # Input features for step t
-            "target_actions": jnp.array(target_a_sequence), # Target a_t (indices)
+            "mlp_inputs": mlp_input_sequence,    # Input features for step t
+            "target_actions": np.asarray(target_a_sequence), # Target a_t (indices)
             # "seq_length": seq_len,
         }
         mlp_data.append(mlp_subject_data)
 
     return rnn_data, mlp_data
 
-def save_training_data(feature_dict):
-    jnp.save('./data/nn_training_data', feature_dict)
+def save_training_data(rnn_data, mlp_data):
+    np.save('./data/rnn_training_data', rnn_data)
+    np.save('./data/mlp_training_data', mlp_data)
+
+def mlp_training_data_to_tensorflow():
+    mlp_data_list = list(np.load('./data/mlp_training_data.npy', allow_pickle=True))
+    all_mlp_inputs = []
+    all_mlp_targets = []
+
+    for subject_data in mlp_data_list:
+        mlp_inputs_np = subject_data['mlp_inputs']
+        target_actions_np = subject_data['target_actions']
+
+        all_mlp_inputs.append(mlp_inputs_np)
+        all_mlp_targets.append(target_actions_np)
+    
+    concatenated_mlp_inputs = np.concatenate(all_mlp_inputs, axis=0)
+    concatenated_mlp_targets = np.concatenate(all_mlp_targets, axis=0)
+
+    print(f"Total MLP steps concatenated: {concatenated_mlp_inputs.shape[0]}")
+    print(f"MLP input features shape: {concatenated_mlp_inputs.shape}")
+    print(f"MLP target actions shape: {concatenated_mlp_targets.shape}")
+
+    mlp_dataset = tf.data.Dataset.from_tensor_slices(
+            (concatenated_mlp_inputs, concatenated_mlp_targets)
+        )
+    return mlp_dataset
+
+def rnn_training_data_to_tensorflow():
+    pass
+    # try:
+    #     mlp_dataset = tf.data.Dataset.from_tensor_slices(
+    #         (concatenated_mlp_inputs, concatenated_mlp_targets)
+    #     )
+
+    #     # --- Optional: Shuffle, Batch, Prefetch ---
+    #     total_steps = concatenated_mlp_inputs.shape[0]
+    #     # Adjust buffer size based on your memory constraints
+    #     shuffle_buffer_size = min(total_steps, 10000)
+
+    #     mlp_dataset = mlp_dataset.shuffle(buffer_size=shuffle_buffer_size)
+    #     mlp_dataset = mlp_dataset.batch(32)
+    #     mlp_dataset = mlp_dataset.prefetch(tf.data.AUTOTUNE)
+
+    #     print("\nTensorFlow Dataset for MLP created successfully!")
+        # You can now iterate over mlp_dataset in your training loop
+        # for batch_inputs, batch_targets in mlp_dataset.take(1):
+        #     print("Example Batch Shapes:")
+        #     print("Inputs:", batch_inputs.shape)
+        #     print("Targets:", batch_targets.shape)
+
+    # except Exception as e:
+    #     print(f"Error creating TensorFlow dataset: {e}")
+    #     print(f"Input dtypes: {concatenated_mlp_inputs.dtype}, {concatenated_mlp_targets.dtype}")
 
 def main():
     # df = pl.read_csv('./data/exp1_banditData.csv', null_values='NA')
@@ -190,6 +244,6 @@ def main():
 
     # one_hots = jax.nn.one_hot(feature_dict['chosenArm'] - 1, 20).squeeze(1)
     # print(one_hots.mean(axis=0))
-    # save_training_data(participant_level_features)
+    save_training_data(rnn_data, mlp_data)
 if __name__ == '__main__':
     main()
