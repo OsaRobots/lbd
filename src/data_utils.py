@@ -47,6 +47,8 @@ def processing(df: pl.DataFrame):
 
 def create_input_features(df: pl.DataFrame) -> pl.DataFrame:
     """Adds state_feat1, state_feat2, and training_flag columns."""
+    df = df.filter(pl.col('expCond') != 'MAB_Lin') # only people who were contextual
+
     num_arms = 20 
     state_feat_one_selector = cs.matches(r'^valArm(?:[1-9]|1[0-9]|' + str(num_arms) + r')feat1$')
     state_feat_two_selector = cs.matches(r'^valArm(?:[1-9]|1[0-9]|' + str(num_arms) + r')feat2$')
@@ -98,7 +100,6 @@ def prepare_model_data(df: pl.DataFrame) -> Tuple[List[Dict[str, Any]], List[Dic
 
     for subject_id, group_df in df.group_by('subjectID', maintain_order=True):
         group_df = group_df.sort('trial') # sort just to be sure
-        seq_len = len(group_df)
 
         np_state_feat1 = np.array(group_df['state_feat1'].to_list(), dtype=np.float32) # (T, num_arms)
         np_state_feat2 = np.array(group_df['state_feat2'].to_list(), dtype=np.float32) # (T, num_arms)
@@ -118,8 +119,6 @@ def prepare_model_data(df: pl.DataFrame) -> Tuple[List[Dict[str, Any]], List[Dic
         r_prev_sequence = np.roll(np_reward_t, shift=1)
         flag_prev_sequence = np.roll(np_training_phase_flag_t, shift=1)
 
-        if subject_id == (2,):
-            print(a_prev_sequence)
         # pad rolled sequences
         a_prev_sequence.at[0].set(default_action_pad_idx)
         r_prev_sequence[0] = default_reward_pad
@@ -130,12 +129,17 @@ def prepare_model_data(df: pl.DataFrame) -> Tuple[List[Dict[str, Any]], List[Dic
         r_prev_sequence = r_prev_sequence[:, np.newaxis]     
         flag_prev_sequence = flag_prev_sequence[:, np.newaxis] 
 
+        rnn_inputs = np.concatenate([
+            s_sequence,                  # (T, 2 * num_arms)
+            np.asarray(a_prev_sequence), # (T, num_arms)
+            r_prev_sequence,             # (T, 1)
+            flag_prev_sequence           # (T, 1)
+        ], axis=1)                       # Shape (T, 2 * num_arms + 2)
+    
+
         rnn_subject_data = {
             "subjectID": subject_id,
-            "states": s_sequence,              # Input s_t
-            "prev_actions": np.asarray(a_prev_sequence),   # Input a_{t-1} (indices)
-            "prev_rewards": r_prev_sequence,   # Input r_{t-1}
-            "prev_reward_flags": flag_prev_sequence, # Input flag_{t-1}
+            "rnn_inputs": rnn_inputs,              # Input s_t
             "target_actions": np.asarray(target_a_sequence),# Target a_t (indices)
             # "train_phase_length": train_phase_len,
             # "seq_length": seq_len,
@@ -143,7 +147,6 @@ def prepare_model_data(df: pl.DataFrame) -> Tuple[List[Dict[str, Any]], List[Dic
         rnn_data.append(rnn_subject_data)
 
         # MLP prep
-
         # use *current* np_training_phase_flag_t as context for MLP
 
         mlp_input_sequence = np.concatenate([
@@ -160,10 +163,6 @@ def prepare_model_data(df: pl.DataFrame) -> Tuple[List[Dict[str, Any]], List[Dic
         mlp_data.append(mlp_subject_data)
 
     return rnn_data, mlp_data
-
-def save_training_data(rnn_data, mlp_data):
-    np.save('./data/rnn_training_data', rnn_data)
-    np.save('./data/mlp_training_data', mlp_data)
 
 def mlp_training_data_to_tensorflow():
     mlp_data_list = list(np.load('./data/mlp_training_data.npy', allow_pickle=True))
@@ -190,7 +189,41 @@ def mlp_training_data_to_tensorflow():
     return mlp_dataset
 
 def rnn_training_data_to_tensorflow():
-    pass
+    rnn_data_list =  list(np.load('./data/rnn_training_data.npy', allow_pickle=True))
+    all_rnn_inputs = []
+    all_rnn_targets = []
+
+    for subject_data in rnn_data_list:
+        rnn_inputs_np = subject_data['rnn_inputs']
+        target_actions_np = subject_data['target_actions']
+
+        print(rnn_inputs_np.shape)
+        all_rnn_inputs.append(rnn_inputs_np)
+        all_rnn_targets.append(target_actions_np)
+
+    # reshape to get shape in form (participants, time, features) since we batch over participants 
+    concatenated_rnn_inputs = np.stack(all_rnn_inputs, axis=-1).transpose(-1, 0, 1)
+    concatenated_rnn_targets = np.stack(all_rnn_targets, axis=-1).transpose(-1, 0, 1)
+
+    print(f"MLP input features shape: {concatenated_rnn_inputs.shape}")
+    print(f"MLP target actions shape: {concatenated_rnn_targets.shape}")
+
+    rnn_dataset = tf.data.Dataset.from_tensor_slices(
+            (concatenated_rnn_inputs, concatenated_rnn_targets)
+        )
+    return rnn_dataset
+
+def save_training_data(rnn_data, mlp_data):
+    np.save('./data/rnn_training_data', rnn_data)
+    np.save('./data/mlp_training_data', mlp_data)
+
+def save_tf_datasets():
+    mlp_dataset = mlp_training_data_to_tensorflow()
+    rnn_dataset = rnn_training_data_to_tensorflow()
+
+    mlp_dataset.save('./data/mlp_tf_dataset')
+    rnn_dataset.save('./data/rnn_tf_dataset')
+    
     # try:
     #     mlp_dataset = tf.data.Dataset.from_tensor_slices(
     #         (concatenated_mlp_inputs, concatenated_mlp_targets)
@@ -221,29 +254,7 @@ def main():
     # participant_level_features = learning_setup(df)
     df = pl.read_csv('./data/exp1_banditData.csv', null_values='NA')
     rnn_data, mlp_data = prepare_model_data(df)
-
-    if rnn_data:
-        print("\n--- Example RNN Data (Subject 0) ---")
-        first_subject_rnn = rnn_data[0]
-        print(f"Subject ID: {first_subject_rnn['subjectID']}")
-        print(f"States shape: {first_subject_rnn['states'].shape}")
-        print(f"Prev Actions shape: {first_subject_rnn['prev_actions'].shape}")
-        print(f"Prev Rewards shape: {first_subject_rnn['prev_rewards'].shape}")
-        print(f"Prev Flags shape: {first_subject_rnn['prev_reward_flags'].shape}")
-        print(f"Target Actions shape: {first_subject_rnn['target_actions'].shape}")
-        # print(f"Train Phase Length: {first_subject_rnn['train_phase_length']}")
-        # print(f"Total Sequence Length: {first_subject_rnn['seq_length']}")
-
-    if mlp_data:
-        print("\n--- Example MLP Data (Subject 0) ---")
-        first_subject_mlp = mlp_data[0]
-        print(f"Subject ID: {first_subject_mlp['subjectID']}")
-        print(f"MLP Inputs shape: {first_subject_mlp['mlp_inputs'].shape}")
-        print(f"Target Actions shape: {first_subject_mlp['target_actions'].shape}")
-        # print(f"Total Sequence Length: {first_subject_mlp['seq_length']}")
-
-    # one_hots = jax.nn.one_hot(feature_dict['chosenArm'] - 1, 20).squeeze(1)
-    # print(one_hots.mean(axis=0))
     save_training_data(rnn_data, mlp_data)
+    save_tf_datasets()
 if __name__ == '__main__':
     main()
