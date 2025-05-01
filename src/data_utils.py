@@ -48,6 +48,7 @@ def processing(df: pl.DataFrame):
 def create_input_features(df: pl.DataFrame) -> pl.DataFrame:
     """Adds state_feat1, state_feat2, and training_flag columns."""
     df = df.filter(pl.col('expCond') != 'MAB_Lin') # only people who were contextual
+    df = df.fill_null(0) # fill nans with 0; only happens for test phase.
 
     num_arms = 20 
     state_feat_one_selector = cs.matches(r'^valArm(?:[1-9]|1[0-9]|' + str(num_arms) + r')feat1$')
@@ -141,8 +142,6 @@ def prepare_model_data(df: pl.DataFrame) -> Tuple[List[Dict[str, Any]], List[Dic
             "subjectID": subject_id,
             "rnn_inputs": rnn_inputs,              # Input s_t
             "target_actions": np.asarray(target_a_sequence),# Target a_t (indices)
-            # "train_phase_length": train_phase_len,
-            # "seq_length": seq_len,
         }
         rnn_data.append(rnn_subject_data)
 
@@ -158,11 +157,15 @@ def prepare_model_data(df: pl.DataFrame) -> Tuple[List[Dict[str, Any]], List[Dic
             "subjectID": subject_id,
             "mlp_inputs": mlp_input_sequence,    # Input features for step t
             "target_actions": np.asarray(target_a_sequence), # Target a_t (indices)
-            # "seq_length": seq_len,
         }
         mlp_data.append(mlp_subject_data)
 
     return rnn_data, mlp_data
+
+def save_training_data(df):
+    rnn_data, mlp_data = prepare_model_data(df)
+    np.save('./data/rnn_training_data', rnn_data)
+    np.save('./data/mlp_training_data', mlp_data)
 
 def mlp_training_data_to_tensorflow():
     mlp_data_list = list(np.load('./data/mlp_training_data.npy', allow_pickle=True))
@@ -184,7 +187,7 @@ def mlp_training_data_to_tensorflow():
     print(f"MLP target actions shape: {concatenated_mlp_targets.shape}")
 
     mlp_dataset = tf.data.Dataset.from_tensor_slices(
-            (concatenated_mlp_inputs, concatenated_mlp_targets)
+            {"inputs": concatenated_mlp_inputs, "targets": concatenated_mlp_targets}
         )
     return mlp_dataset
 
@@ -196,8 +199,6 @@ def rnn_training_data_to_tensorflow():
     for subject_data in rnn_data_list:
         rnn_inputs_np = subject_data['rnn_inputs']
         target_actions_np = subject_data['target_actions']
-
-        print(rnn_inputs_np.shape)
         all_rnn_inputs.append(rnn_inputs_np)
         all_rnn_targets.append(target_actions_np)
 
@@ -209,13 +210,9 @@ def rnn_training_data_to_tensorflow():
     print(f"MLP target actions shape: {concatenated_rnn_targets.shape}")
 
     rnn_dataset = tf.data.Dataset.from_tensor_slices(
-            (concatenated_rnn_inputs, concatenated_rnn_targets)
+            {"inputs": concatenated_rnn_inputs, "targets": concatenated_rnn_targets}
         )
     return rnn_dataset
-
-def save_training_data(rnn_data, mlp_data):
-    np.save('./data/rnn_training_data', rnn_data)
-    np.save('./data/mlp_training_data', mlp_data)
 
 def save_tf_datasets():
     mlp_dataset = mlp_training_data_to_tensorflow()
@@ -250,11 +247,9 @@ def save_tf_datasets():
     #     print(f"Input dtypes: {concatenated_mlp_inputs.dtype}, {concatenated_mlp_targets.dtype}")
 
 def main():
-    # df = pl.read_csv('./data/exp1_banditData.csv', null_values='NA')
-    # participant_level_features = learning_setup(df)
     df = pl.read_csv('./data/exp1_banditData.csv', null_values='NA')
-    rnn_data, mlp_data = prepare_model_data(df)
-    save_training_data(rnn_data, mlp_data)
+    save_training_data(df)
     save_tf_datasets()
+
 if __name__ == '__main__':
     main()

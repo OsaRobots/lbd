@@ -1,10 +1,9 @@
 from flax import nnx
 import jax
 import jax.numpy as jnp
-import pandas as pd 
-import numpy as np
 import tensorflow as tf 
 from typing import Callable
+import optax 
 
 class MLP(nnx.Module):
     def __init__(self, 
@@ -52,78 +51,76 @@ class MLPModel(nnx.Module):
         z_out = self.out_layer(z)
         return z_out
     
-    def fit(self, data):
+    def fit(self, batch_size, train_steps, dataset: tf.data.Dataset):
         """
         We train the MLP model such that it takes 
         """
+        dataset = dataset.repeat().shuffle(150)
+        dataset = dataset.batch(batch_size, drop_remainder=True).take(train_steps).prefetch(1)
 
 
 
 if __name__ == '__main__':
-    # rngs = nnx.Rngs(0)
-    # in_dims = 10
-    # hidden_dims = 20
-    # out_dims = 5
-    # num_mlps = 3
+    rngs = nnx.Rngs(0)
+    in_dims = 41
+    hidden_dims = 10
+    out_dims = 20
+    num_mlps = 1
+    learning_rate = 0.005
+    momentum = 0.9
 
-    # x = jax.random.normal(rngs.params(), (32, in_dims))
-    # model = MLPModel(in_dims, hidden_dims, out_dims, num_mlps, rngs)
-    # y = model(x)
-    # print(y.shape)  # Should be (32, out_dims)
-    mlp_data_list = list(jnp.load('./data/mlp_training_data.npy', allow_pickle=True))
-    # dataset = tf.data.Dataset.from_tensor_slices(pd.DataFrame.from_dict(data).to_dict(orient="list"))
+    model = MLPModel(in_dims, hidden_dims, out_dims, num_mlps, rngs)
+    optimizer = nnx.Optimizer(model, optax.adamw(learning_rate, momentum))
 
-    all_mlp_inputs = []
-    all_mlp_targets = []
+    metrics = nnx.MultiMetric(
+        accuracy=nnx.metrics.Accuracy(),
+        loss=nnx.metrics.Average('loss'),
+    )
 
-    for subject_data in mlp_data_list:
-        # Ensure arrays are numpy arrays (they might be JAX arrays if saved directly)
-        mlp_inputs_np = np.asarray(subject_data['mlp_inputs'])
-        target_actions_np = np.asarray(subject_data['target_actions'])
+    def loss_fn(model: MLPModel, batch):
+        logits = model(batch['inputs'])
+        loss = optax.softmax_cross_entropy(
+            logits=logits, labels=batch['targets']
+        ).mean()
 
-        # Basic validation
-        if mlp_inputs_np.shape[0] != target_actions_np.shape[0]:
-            print(f"Warning: Mismatch in sequence length for subject {subject_data.get('subjectID', 'Unknown')}. Skipping.")
-            continue
-        if mlp_inputs_np.ndim != 2 or target_actions_np.ndim != 1:
-            print(f"Warning: Unexpected array dimensions for subject {subject_data.get('subjectID', 'Unknown')}. Skipping.")
-            continue
+        return loss, logits
 
-        all_mlp_inputs.append(mlp_inputs_np)
-        all_mlp_targets.append(target_actions_np)
+    @nnx.jit
+    def train_step(model: MLPModel,
+                   optimizer: nnx.Optimizer,
+                   metrics: nnx.MultiMetric,
+                   batch):
+        
+        grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)
+        (loss, logits), grads = grad_fn(model, batch)
 
-    if not all_mlp_inputs:
-        print("No valid data found after checking subjects.")
-        # exit()
+        # convert one-hot to class indices for the metric
+        labels_idx = jnp.argmax(batch['targets'], axis=-1)
+
+        metrics.update(loss=loss,
+                       logits=logits,
+                       labels=labels_idx)      
+        
+        optimizer.update(grads)
+
+    @nnx.jit
+    def eval_step(model: MLPModel, metrics: nnx.MultiMetric, batch):
+        loss, logits = loss_fn(model, batch)
+        metrics.update(loss=loss, logits=logits, labels=batch['targets'])  # In-place updates.
+
+    metrics_history = {
+        'train_loss': [],
+        'train_accuracy': [],
+        'test_loss': [],
+        'test_accuracy': [],
+    }
     
-    concatenated_mlp_inputs = np.concatenate(all_mlp_inputs, axis=0)
-    concatenated_mlp_targets = np.concatenate(all_mlp_targets, axis=0)
+    mlp_dataset = tf.data.Dataset.load('./data/mlp_tf_dataset')
+    mlp_dataset = mlp_dataset.repeat().shuffle(150)
+    mlp_dataset = mlp_dataset.batch(2, drop_remainder=True).take(50).prefetch(1)
 
-    print(f"Total MLP steps concatenated: {concatenated_mlp_inputs.shape[0]}")
-    print(f"MLP input features shape: {concatenated_mlp_inputs.shape}")
-    print(f"MLP target actions shape: {concatenated_mlp_targets.shape}")
+    for step, batch in enumerate(mlp_dataset.as_numpy_iterator()):
+        train_step(model, optimizer, metrics, batch)
+        break 
 
-    try:
-        mlp_dataset = tf.data.Dataset.from_tensor_slices(
-            (concatenated_mlp_inputs, concatenated_mlp_targets)
-        )
 
-        # --- Optional: Shuffle, Batch, Prefetch ---
-        total_steps = concatenated_mlp_inputs.shape[0]
-        # Adjust buffer size based on your memory constraints
-        shuffle_buffer_size = min(total_steps, 10000)
-
-        mlp_dataset = mlp_dataset.shuffle(buffer_size=shuffle_buffer_size)
-        mlp_dataset = mlp_dataset.batch(32)
-        mlp_dataset = mlp_dataset.prefetch(tf.data.AUTOTUNE)
-
-        print("\nTensorFlow Dataset for MLP created successfully!")
-        # You can now iterate over mlp_dataset in your training loop
-        # for batch_inputs, batch_targets in mlp_dataset.take(1):
-        #     print("Example Batch Shapes:")
-        #     print("Inputs:", batch_inputs.shape)
-        #     print("Targets:", batch_targets.shape)
-
-    except Exception as e:
-        print(f"Error creating TensorFlow dataset: {e}")
-        print(f"Input dtypes: {concatenated_mlp_inputs.dtype}, {concatenated_mlp_targets.dtype}")
