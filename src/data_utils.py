@@ -1,8 +1,6 @@
 import polars as pl
 import polars.selectors as cs 
 import jax.numpy as jnp 
-from inspect import signature
-from typing import Callable
 import jax.nn 
 
 # def list_eval_ref(
@@ -61,10 +59,12 @@ def processing(df: pl.DataFrame):
 def learning_setup(df: pl.DataFrame):
     # cs.matches(r'^valArm(?:[1-9]|1[0-9]|20)feat(?:[1-2])$')
     # state feats regex
+
     state_feat_one_selector = cs.matches(r'^valArm(?:[1-9]|1[0-9]|20)feat1$')
     state_feat_two_selector = cs.matches(r'^valArm(?:[1-9]|1[0-9]|20)feat2$')
 
     # state feat1 features are features which have weight1 = 1 attached to them
+    participant_level_features = {}
     df = df.with_columns(
         pl.when(pl.col('weight1').eq(1))
         .then(pl.concat_arr(state_feat_one_selector))
@@ -87,29 +87,53 @@ def learning_setup(df: pl.DataFrame):
         .alias('training_flag')
     )
 
-    state_feat_one = df.select(pl.col('state_feat1')).to_jax()
-    state_feat_two = df.select(pl.col('state_feat2')).to_jax()
-    arm = df.select(pl.col('chosenArm')).to_jax()
-    reward = df.select(pl.col('rewardObtained')).to_jax()
-    training_flag = df.select(pl.col('training_flag')).to_jax()
-    
-    feature_dict = {
-        'state_feat1': state_feat_one,
-        'state_feat2': state_feat_two,
-        'chosenArm': arm,
-        'rewardObtained': reward,
-        'training_flag': training_flag
-    }
+    unique_subject_ids = df.select(pl.col('subjectID')).unique()
+    for unique_subject_id in unique_subject_ids.rows(named=True):
 
-    return feature_dict
+        df_subset = df.filter(pl.col('subjectID') == unique_subject_id['subjectID'])
+        df_subset_train_phase = df_subset.filter(pl.col('phase') == 'training').sort(pl.col('trial'))
+        df_subset_test_phase = df_subset.filter(pl.col('phase') == 'test').sort(pl.col('trial'))
+        
+        state_feat_one_train = df_subset_train_phase.select(pl.col('state_feat1')).to_jax()
+        state_feat_two_train = df_subset_train_phase.select(pl.col('state_feat2')).to_jax()
+        arm_train = jax.nn.one_hot(df_subset_train_phase.select(pl.col('chosenArm')).to_jax() - 1, 20).squeeze(1)
+        reward_train = df_subset_train_phase.select(pl.col('rewardObtained')).to_jax()
+
+        state_feat_one_test = df_subset_test_phase.select(pl.col('state_feat1')).to_jax()
+        state_feat_two_test = df_subset_test_phase.select(pl.col('state_feat2')).to_jax()
+        arm_test = jax.nn.one_hot(df_subset_test_phase.select(pl.col('chosenArm')).to_jax() - 1, 20).squeeze(1)
+        reward_test = df_subset_test_phase.select(pl.col('rewardObtained')).to_jax()
+
+        feature_dict_train = {
+            'state_feat1': state_feat_one_train,
+            'state_feat2': state_feat_two_train,
+            'chosenArm': arm_train,
+            'rewardObtained': reward_train,
+        }
+
+        feature_dict_test = {
+            'state_feat1': state_feat_one_test,
+            'state_feat2': state_feat_two_test,
+            'chosenArm': arm_test,
+            'rewardObtained': reward_test,
+        }
+
+        feature_dict = {'training_phase': feature_dict_train,
+                        'test_phase': feature_dict_test,
+        }
+
+        participant_level_features[unique_subject_id['subjectID']] = feature_dict
+
+    return participant_level_features
     # line up so that weight1 is always 1 and weight 2 is always 2  
 def save_training_data(feature_dict):
     jnp.save('./data/nn_training_data', feature_dict)
 
 def main():
     df = pl.read_csv('./data/exp1_banditData.csv', null_values='NA')
-    feature_dict = learning_setup(df)
-    one_hots = jax.nn.one_hot(feature_dict['chosenArm'] - 1, 20).squeeze(1)
-    print(one_hots.mean(axis=0))
+    participant_level_features = learning_setup(df)
+    # one_hots = jax.nn.one_hot(feature_dict['chosenArm'] - 1, 20).squeeze(1)
+    # print(one_hots.mean(axis=0))
+    save_training_data(participant_level_features)
 if __name__ == '__main__':
     main()

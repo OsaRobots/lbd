@@ -34,7 +34,7 @@ class MLPModel(nnx.Module):
         keys = jax.random.split(jax.random.key(0), num_mlps)
         self.models = self.create_models(keys)
     
-    # TODO activations
+    # TODO more flexible way of writing this? 
     @nnx.vmap(in_axes=(None, 0), out_axes=0)
     def create_models(self, key: jax.Array):
         return MLP(hidden_dims=self.hidden_dims, rngs=nnx.Rngs(key))
@@ -61,7 +61,4 @@ if __name__ == '__main__':
     # y = model(x)
     # print(y.shape)  # Should be (32, out_dims)
     data_dict = jnp.load('./data/nn_training_data.npy', allow_pickle=True).item() # item to get dict 
-    # concatenate 
-    dct = {}
     data = jnp.concat(data_dict.values(), axis=1)
-    print(data.shape)
