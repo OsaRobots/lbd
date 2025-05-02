@@ -220,31 +220,6 @@ def save_tf_datasets():
 
     mlp_dataset.save('./data/mlp_tf_dataset')
     rnn_dataset.save('./data/rnn_tf_dataset')
-    
-    # try:
-    #     mlp_dataset = tf.data.Dataset.from_tensor_slices(
-    #         (concatenated_mlp_inputs, concatenated_mlp_targets)
-    #     )
-
-    #     # --- Optional: Shuffle, Batch, Prefetch ---
-    #     total_steps = concatenated_mlp_inputs.shape[0]
-    #     # Adjust buffer size based on your memory constraints
-    #     shuffle_buffer_size = min(total_steps, 10000)
-
-    #     mlp_dataset = mlp_dataset.shuffle(buffer_size=shuffle_buffer_size)
-    #     mlp_dataset = mlp_dataset.batch(32)
-    #     mlp_dataset = mlp_dataset.prefetch(tf.data.AUTOTUNE)
-
-    #     print("\nTensorFlow Dataset for MLP created successfully!")
-        # You can now iterate over mlp_dataset in your training loop
-        # for batch_inputs, batch_targets in mlp_dataset.take(1):
-        #     print("Example Batch Shapes:")
-        #     print("Inputs:", batch_inputs.shape)
-        #     print("Targets:", batch_targets.shape)
-
-    # except Exception as e:
-    #     print(f"Error creating TensorFlow dataset: {e}")
-    #     print(f"Input dtypes: {concatenated_mlp_inputs.dtype}, {concatenated_mlp_targets.dtype}")
 
 def main():
     df = pl.read_csv('./data/exp1_banditData.csv', null_values='NA')

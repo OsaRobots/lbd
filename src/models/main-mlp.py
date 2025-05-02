@@ -60,8 +60,6 @@ class MLPModel(nnx.Module):
         dataset = dataset.repeat().shuffle(150)
         dataset = dataset.batch(batch_size, drop_remainder=True).take(train_steps).prefetch(1)
 
-
-
 if __name__ == '__main__':
     rngs = nnx.Rngs(0)
     in_dims = 41
@@ -72,7 +70,7 @@ if __name__ == '__main__':
     momentum = 0.9
     train_ratio = .75
     batch_size = 32 
-    train_steps = 50 
+    train_steps = 500
     eval_every = 5
     shuffle_buffer_size = 1024
 
@@ -103,7 +101,7 @@ if __name__ == '__main__':
         # convert one-hot to class indices for the metric
         # TODO: dtype here?
         labels_idx = jnp.argmax(batch['targets'], axis=-1)
-
+        # jax.debug.print("labels look like {labels_idx}", labels_idx=labels_idx)
         metrics.update(loss=loss,
                        logits=logits,
                        labels=labels_idx)      
@@ -113,7 +111,8 @@ if __name__ == '__main__':
     @nnx.jit
     def eval_step(model: MLPModel, metrics: nnx.MultiMetric, batch):
         loss, logits = loss_fn(model, batch)
-        metrics.update(loss=loss, logits=logits, labels=batch['targets'])  # In-place updates.
+        labels_idx = jnp.argmax(batch['targets'], axis=-1)
+        metrics.update(loss=loss, logits=logits, labels=labels_idx)  # In-place updates.
 
     metrics_history = {
         'train_loss': [],
@@ -131,11 +130,23 @@ if __name__ == '__main__':
     test_ds = mlp_ds.skip(num_train_points)
 
     train_ds = train_ds.repeat().shuffle(shuffle_buffer_size)
-    train_ds = train_ds.batch(2, drop_remainder=True).take(train_steps).prefetch(1)
+    train_ds = train_ds.batch(batch_size, drop_remainder=True).take(train_steps).prefetch(1)
     test_ds = test_ds.batch(batch_size, drop_remainder=True).prefetch(1)
 
-    def clear_output():
-        os.system('cls' if os.name == 'nt' else 'clear')
+    plt.ion() # interactive mode for now 
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+    ax1.set_title("Loss")
+    ax2.set_title("Accuracy")
+
+    # two empty Line2D objects we’ll update on every eval
+    train_loss_line,  = ax1.plot([], [], label="train_loss")
+    test_loss_line,   = ax1.plot([], [], label="test_loss")
+    train_acc_line,   = ax2.plot([], [], label="train_accuracy")
+    test_acc_line,    = ax2.plot([], [], label="test_accuracy")
+
+    ax1.legend(); ax2.legend()
+    fig.tight_layout()
+    fig.show()
 
     for step, batch in enumerate(train_ds.as_numpy_iterator()):
         train_step(model, optimizer, metrics, batch)
@@ -155,17 +166,25 @@ if __name__ == '__main__':
                 metrics_history[f'test_{metric}'].append(value)
             metrics.reset()  # Reset the metrics for the next training epoch.
 
-            clear_output()
         # Plot loss and accuracy in subplots
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
-            ax1.set_title('Loss')
-            ax2.set_title('Accuracy')
-            for dataset in ('train', 'test'):
-                ax1.plot(metrics_history[f'{dataset}_loss'], label=f'{dataset}_loss')
-                ax2.plot(metrics_history[f'{dataset}_accuracy'], label=f'{dataset}_accuracy')
-            ax1.legend()
-            ax2.legend()
-            plt.show()
-            break 
+            # ----- update stored y‑data -----
+            train_loss_line.set_data(range(len(metrics_history['train_loss'])),
+                                    metrics_history['train_loss'])
+            test_loss_line.set_data(range(len(metrics_history['test_loss'])),
+                                    metrics_history['test_loss'])
+            train_acc_line.set_data(range(len(metrics_history['train_accuracy'])),
+                                    metrics_history['train_accuracy'])
+            test_acc_line.set_data(range(len(metrics_history['test_accuracy'])),
+                                metrics_history['test_accuracy'])
+
+            # rescale the axes so new points are visible
+            for ax in (ax1, ax2):
+                ax.relim()              # recompute limits
+                ax.autoscale_view()     # apply them
+
+            fig.canvas.draw_idle()      # queue a repaint
+            fig.canvas.flush_events()   # force the GUI event loop to process it
+            plt.pause(0.001)            # tiny sleep keeps things responsive
+
 
 
