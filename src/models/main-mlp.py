@@ -5,7 +5,6 @@ import tensorflow as tf
 from typing import Callable
 import optax 
 import matplotlib.pyplot as plt
-import os 
 
 class MLP(nnx.Module):
     def __init__(self, 
@@ -16,6 +15,9 @@ class MLP(nnx.Module):
       self.mlp = nnx.Sequential(
          nnx.Linear(hidden_dims, hidden_dims, rngs=rngs),
          activation,
+         nnx.Dropout(rate=.1, rngs=rngs),
+         nnx.Linear(hidden_dims, hidden_dims, rngs=rngs),
+         nnx.Dropout(rate=.1, rngs=rngs)
       )
 
     def __call__(self, x):
@@ -144,7 +146,9 @@ if __name__ == '__main__':
     train_acc_line,   = ax2.plot([], [], label="train_accuracy")
     test_acc_line,    = ax2.plot([], [], label="test_accuracy")
 
-    ax1.legend(); ax2.legend()
+    ax1.legend()
+    ax2.legend()
+
     fig.tight_layout()
     fig.show()
 

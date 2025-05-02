@@ -7,7 +7,7 @@ import optax
 import matplotlib.pyplot as plt
 
 # TODO: n_layers?
-class LSTMModel(nnx.Module):
+class TransformerModel(nnx.Module):
     def __init__(self, in_dims, hidden_dims, out_dims, rngs: nnx.Rngs):
         #self.lstm_cell = nnx.OptimizedLSTMCell(in_dims, hidden_dims, rngs=rngs)
         self.lstm = nnx.RNN(cell=nnx.OptimizedLSTMCell(in_dims, hidden_dims, rngs=rngs), rngs=rngs)
