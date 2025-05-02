@@ -227,10 +227,10 @@ def main():
     save_tf_datasets()
 
 if __name__ == '__main__':
-    # main()
-    d = tf.data.Dataset.load('./data/rnn_tf_dataset')
-    d = d.repeat().shuffle(2)
-    d = d.batch(2, drop_remainder=True).take(3).prefetch(1)
-    for batch in d.as_numpy_iterator():
-        print(batch['inputs'].shape)
-        break 
+    main()
+    # d = tf.data.Dataset.load('./data/rnn_tf_dataset')
+    # d = d.repeat().shuffle(2)
+    # d = d.batch(2, drop_remainder=True).take(3).prefetch(1)
+    # for batch in d.as_numpy_iterator():
+    #     print(batch['inputs'].shape)
+    #     break 

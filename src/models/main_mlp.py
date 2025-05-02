@@ -6,36 +6,78 @@ from typing import Callable
 import optax 
 import matplotlib.pyplot as plt
 
-# TODO: n_layers?
-class TransformerModel(nnx.Module):
-    def __init__(self, in_dims, hidden_dims, out_dims, rngs: nnx.Rngs):
-        #self.lstm_cell = nnx.OptimizedLSTMCell(in_dims, hidden_dims, rngs=rngs)
-        self.lstm = nnx.RNN(cell=nnx.OptimizedLSTMCell(in_dims, hidden_dims, rngs=rngs), rngs=rngs)
-        self.head = nnx.Linear(hidden_dims, out_dims, rngs=rngs)
-        # self.mlp = nnx.Sequential(nnx.Linear(hidden_dims, hidden_dims, rngs=rngs), 
-        #                           nnx.relu, 
-        #                           nnx.Linear(hidden_dims, out_dims, rngs=rngs))      
-          
-    def __call__(self, xs):
-        # NOTE: no need to worry about teacher-forcing because we already give the true action in the inputs. 
-        zs = self.lstm(xs) # shape (b_size, time, hidden_dims)
-        logits = self.head(zs) # shape: (b_size, time, out_dims)
-        return logits 
+# TODO add param for dropout rate
+class MLP(nnx.Module):
+    def __init__(self, 
+                 hidden_dims, 
+                 rngs: nnx.Rngs, 
+                 activation: Callable = nnx.relu):
+      
+      self.mlp = nnx.Sequential(
+         nnx.Linear(hidden_dims, hidden_dims, rngs=rngs),
+         activation,
+         nnx.Dropout(rate=.1, rngs=rngs),
+         nnx.Linear(hidden_dims, hidden_dims, rngs=rngs),
+         nnx.Dropout(rate=.1, rngs=rngs)
+      )
+
+    def __call__(self, x):
+        x = self.mlp(x)
+        return x
+
+class MLPModel(nnx.Module):
+    def __init__(self, 
+                 in_dims, 
+                 hidden_dims, 
+                 out_dims, 
+                 num_mlps, 
+                 rngs: nnx.Rngs, 
+                 activation: Callable = nnx.relu):
+        
+        self.hidden_dims = hidden_dims
+        self.initial_linear = nnx.Linear(in_dims, hidden_dims, rngs=rngs)
+        self.activation = activation 
+        self.out_layer = nnx.Linear(hidden_dims, out_dims, rngs=rngs)
+        keys = jax.random.split(jax.random.key(0), num_mlps)
+        self.models = self.create_models(keys)
+    
+    # TODO more flexible way of writing this? 
+    @nnx.vmap(in_axes=(None, 0), out_axes=0)
+    def create_models(self, key: jax.Array):
+        return MLP(hidden_dims=self.hidden_dims, rngs=nnx.Rngs(key))
+
+    def __call__(self, x):
+        @nnx.scan(in_axes=(0, nnx.Carry), out_axes=nnx.Carry)
+        def forward(model: MLP, x):
+            x = model(x)
+            return x 
+        z = self.activation(self.initial_linear(x))
+        z = forward(self.models, z)
+        z_out = self.out_layer(z)
+        return z_out
+    
+    def fit(self, batch_size, train_steps, dataset: tf.data.Dataset):
+        """
+        We train the MLP model such that it takes 
+        """
+        dataset = dataset.repeat().shuffle(150)
+        dataset = dataset.batch(batch_size, drop_remainder=True).take(train_steps).prefetch(1)
 
 if __name__ == '__main__':
     rngs = nnx.Rngs(0)
-    in_dims = 62
+    in_dims = 41
     hidden_dims = 10
     out_dims = 20
+    num_mlps = 1
     learning_rate = 0.005
     momentum = 0.9
     train_ratio = .75
     batch_size = 32 
     train_steps = 500
     eval_every = 5
-    shuffle_buffer_size = 256
+    shuffle_buffer_size = 1024
 
-    model = LSTMModel(in_dims, hidden_dims, out_dims, rngs)
+    model = MLPModel(in_dims, hidden_dims, out_dims, num_mlps, rngs)
     optimizer = nnx.Optimizer(model, optax.adamw(learning_rate, momentum))
 
     metrics = nnx.MultiMetric(
@@ -43,8 +85,7 @@ if __name__ == '__main__':
         loss=nnx.metrics.Average('loss'),
     )
 
-    def loss_fn(model: LSTMModel, batch):
-        # TODO: do I need to mask anything?
+    def loss_fn(model: MLPModel, batch):
         logits = model(batch['inputs'])
         loss = optax.softmax_cross_entropy(
             logits=logits, labels=batch['targets']
@@ -52,7 +93,7 @@ if __name__ == '__main__':
         return loss, logits
 
     @nnx.jit
-    def train_step(model: LSTMModel,
+    def train_step(model: MLPModel,
                    optimizer: nnx.Optimizer,
                    metrics: nnx.MultiMetric,
                    batch):
@@ -71,9 +112,9 @@ if __name__ == '__main__':
         optimizer.update(grads)
 
     @nnx.jit
-    def eval_step(model: LSTMModel, metrics: nnx.MultiMetric, batch):
+    def eval_step(model: MLPModel, metrics: nnx.MultiMetric, batch):
         loss, logits = loss_fn(model, batch)
-        labels_idx = jnp.argmax(batch['targets'], axis=-1) # is -1 sill fine? should be...
+        labels_idx = jnp.argmax(batch['targets'], axis=-1)
         metrics.update(loss=loss, logits=logits, labels=labels_idx)  # In-place updates.
 
     metrics_history = {
@@ -83,13 +124,13 @@ if __name__ == '__main__':
         'test_accuracy': [],
     }
     
-    rnn_ds = tf.data.Dataset.load('./data/rnn_tf_dataset')
-    num_data_points = tf.data.experimental.cardinality(rnn_ds).numpy()
-    rnn_ds = rnn_ds.shuffle(num_data_points)
+    mlp_ds = tf.data.Dataset.load('./data/mlp_tf_dataset')
+    num_data_points = tf.data.experimental.cardinality(mlp_ds).numpy()
+    mlp_ds = mlp_ds.shuffle(num_data_points)
 
     num_train_points = int(num_data_points * train_ratio)
-    train_ds = rnn_ds.take(num_train_points)
-    test_ds = rnn_ds.skip(num_train_points)
+    train_ds = mlp_ds.take(num_train_points)
+    test_ds = mlp_ds.skip(num_train_points)
 
     train_ds = train_ds.repeat().shuffle(shuffle_buffer_size)
     train_ds = train_ds.batch(batch_size, drop_remainder=True).take(train_steps).prefetch(1)
@@ -108,7 +149,7 @@ if __name__ == '__main__':
 
     ax1.legend()
     ax2.legend()
-    
+
     fig.tight_layout()
     fig.show()
 
@@ -150,4 +191,5 @@ if __name__ == '__main__':
             fig.canvas.flush_events()   # force the GUI event loop to process it
             plt.pause(0.001)            # tiny sleep keeps things responsive
 
-    
+
+
