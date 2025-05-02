@@ -26,18 +26,20 @@ class LSTMModel(nnx.Module):
 if __name__ == '__main__':
     rngs = nnx.Rngs(0)
     in_dims = 62
-    hidden_dims = 10
+    hidden_dims = 128
     out_dims = 20
-    learning_rate = 0.005
+    learning_rate = 0.001
+    weight_decay = 0.01
+
     momentum = 0.9
     train_ratio = .75
     batch_size = 32 
-    train_steps = 500
-    eval_every = 5
+    train_steps = 5000
+    eval_every = 100
     shuffle_buffer_size = 256
 
     model = LSTMModel(in_dims, hidden_dims, out_dims, rngs)
-    optimizer = nnx.Optimizer(model, optax.adamw(learning_rate, momentum))
+    optimizer = nnx.Optimizer(model, optax.adamw(learning_rate, momentum, weight_decay=weight_decay))
 
     metrics = nnx.MultiMetric(
         accuracy=nnx.metrics.Accuracy(),

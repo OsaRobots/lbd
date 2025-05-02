@@ -91,7 +91,7 @@ if __name__ == '__main__':
     batch_size = 32 # Adjust based on GPU memory
     train_steps = 5000 # Increased steps might be needed
     eval_every = 100 # Evaluate less frequently if steps increase
-    shuffle_buffer_size = 1024 # Larger buffer for better shuffling
+    shuffle_buffer_size = 256 # Larger buffer for better shuffling
     sequence_length = 100 # Assuming MAB task has T=100 trials per subject based on data prep
 
     model = TransformerModel(in_dims, hidden_dims, out_dims, num_heads, rngs=rngs)
@@ -103,8 +103,9 @@ if __name__ == '__main__':
         loss=nnx.metrics.Average('loss'),
     )
 
-    def loss_fn(model: TransformerModel, batch):#, rngs: nnx.Rngs):
-        logits = model(batch['inputs'], deterministic=False)
+    def loss_fn(model: TransformerModel, batch):
+        # TODO: do I need to mask anything?
+        logits = model(batch['inputs'])
         loss = optax.softmax_cross_entropy(
             logits=logits, labels=batch['targets']
         ).mean()
@@ -208,5 +209,6 @@ if __name__ == '__main__':
             fig.canvas.draw_idle()      # queue a repaint
             fig.canvas.flush_events()   # force the GUI event loop to process it
             plt.pause(0.001)            # tiny sleep keeps things responsive
+
 
     
