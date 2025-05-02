@@ -1,25 +1,26 @@
 from flax import nnx
-import jax
-import jax.numpy as jnp
+import jax 
+from jax import random, numpy as jnp
 import tensorflow as tf 
 from typing import Callable
 import optax 
 import matplotlib.pyplot as plt
 
 # TODO: n_layers?
+# TODO: Training accuracy seems suspiciously good...
 # Ensure the mask is defined properly
 
 class MLP(nnx.Module):
     def __init__(self, hidden_dims, num_heads, rngs: nnx.Rngs):
         self.dense1 = nnx.Linear(hidden_dims, hidden_dims * num_heads, rngs=rngs) # Typical expansion
         self.dense2 = nnx.Linear(hidden_dims * num_heads, hidden_dims, rngs=rngs)
-        self.dropout = nnx.Dropout(rate=0.1) # Add dropout consistent with Transformer block
+        self.dropout = nnx.Dropout(rate=0.1, rngs=rngs) # Add dropout consistent with Transformer block
 
-    def __call__(self, x, rngs: nnx.Rngs, *, deterministic: bool = False):
+    def __call__(self, x, *, deterministic: bool = False):
         x = self.dense1(x)
         x = jax.nn.relu(x) # Or gelu
         x = self.dense2(x)
-        x = self.dropout(x, rngs=rngs, deterministic=deterministic)
+        x = self.dropout(x, deterministic=deterministic)
         return x
     
 class TransformerModel(nnx.Module):
@@ -35,7 +36,7 @@ class TransformerModel(nnx.Module):
         # - Lacks positional embeddings, which are usually crucial for sequence order.
         # - Typically multiple blocks are stacked.
 
-        # TODO: an MLP instead? -> An MLP could be used here, or just Linear is fine.
+        self.rngs = rngs 
         self.initial_proj = nnx.Linear(in_dims, hidden_dims, rngs=rngs)
         self.ln1 = nnx.LayerNorm(num_features=hidden_dims, rngs=rngs)
         # keep dim. the same for residual stream
@@ -43,66 +44,41 @@ class TransformerModel(nnx.Module):
                                           in_features=hidden_dims,
                                           qkv_features=hidden_dims, # Often qkv_features = hidden_dims // num_heads
                                           out_features=hidden_dims,
-                                          dropout_rate=.1, # Dropout happens *within* MHA call
+                                          dropout_rate=.1, 
                                           rngs=rngs)
 
-        self.dropout_res1 = nnx.Dropout(rate=.1) # Dropout for the first residual connection
+        self.dropout_res1 = nnx.Dropout(rate=.1, rngs=rngs) # Dropout for the first residual connection
         self.ln2 = nnx.LayerNorm(num_features=hidden_dims, rngs=rngs) # LayerNorm on the *output* of the residual stream
         self.mlp = MLP(hidden_dims, num_heads=num_heads, rngs=rngs)
-        self.dropout_res2 = nnx.Dropout(rate=.1) # Dropout for the second residual connection
+        self.dropout_res2 = nnx.Dropout(rate=.1, rngs=rngs) # Dropout for the second residual connection
         self.action_logits = nnx.Linear(hidden_dims, out_dims, rngs=rngs)
         
           
-def __call__(self,
-             inputs: jax.Array,
-             rngs: nnx.Rngs, 
-             *,
-             deterministic: bool = False):
+    def __call__(self,
+                inputs: jax.Array,
+                # rngs: nnx.Rngs, 
+                *,
+                deterministic: bool = False):
 
-        # NOTE: Teacher-forcing is handled by the data prep (inputs include s_t, a_{t-1}, r_{t-1})
-        # Target is a_t.
-
-        # 1. Create Causal Mask
-        # Mask needs shape like (batch, 1, seq_len, seq_len)
-        # nnx.make_causal_mask expects input shape (batch, seq_len, ...)
-        # Assuming inputs shape is (batch, seq_len, features)
+        # NOTE: Teacher-forcing is handled by the data prep 
         if inputs.ndim != 3:
              raise ValueError(f"Expected inputs to have 3 dimensions (batch, seq, features), got {inputs.shape}")
-        causal_mask = nnx.make_causal_mask(inputs[:, :, 0]) # Use any feature slice just to get batch/seq dims
+        causal_mask = nnx.make_causal_mask(inputs[:, :, 0]) # use any feature slice just to get batch/seq dims
 
-        # TODO: Add Positional Embeddings here if needed.
-
-        # Project input features to hidden dimension
+        # TODO: positional embeddings, rngs 
         x_proj = self.initial_proj(inputs)
-
-        # --- First Block: Multi-Head Attention ---
         x_norm = self.ln1(x_proj)
+        attn_output = self.mha(x_norm, mask=causal_mask, decode=False, deterministic=deterministic)
+        x = x_proj + self.dropout_res1(attn_output, deterministic=deterministic)
 
-        # Pass rngs for internal dropout, the mask, and deterministic flag
-        # TODO: do I need a new RNG...? -> Pass the main `rngs` object. NNX handles splitting.
-        attn_output = self.mha(inputs_q=x_norm, # Query from normalized input
-                               inputs_kv=x_norm, # Key/Value from same normalized input
-                               mask=causal_mask,
-                               rngs=rngs,
-                               deterministic=deterministic)
-
-        # Residual connection 1 (with dropout)
-        # Dropout is often applied *before* adding the residual connection
-        x = x_proj + self.dropout_res1(attn_output, rngs=rngs, deterministic=deterministic)
-
-        # --- Second Block: MLP ---
-        z_norm = self.ln2(x) # Apply layer norm *before* MLP
-        mlp_output = self.mlp(z_norm, rngs=rngs, deterministic=deterministic)
-
-        # Residual connection 2 (with dropout)
-        z = x + self.dropout_res2(mlp_output, rngs=rngs, deterministic=deterministic)
-
-        # Final layer to get action logits
+        z_norm = self.ln2(x) 
+        mlp_output = self.mlp(z_norm, deterministic=deterministic)
+        z = x + self.dropout_res2(mlp_output, deterministic=deterministic)
         logits = self.action_logits(z)
         return logits
 
 if __name__ == '__main__':
-    rngs = nnx.Rngs(0)
+    rngs = nnx.Rngs(params=0, dropout=random.key(1))
     in_dims = 62
     hidden_dims = 128 # Often larger than num_heads * head_dim
     out_dims = 20 # Number of arms/actions
@@ -127,9 +103,8 @@ if __name__ == '__main__':
         loss=nnx.metrics.Average('loss'),
     )
 
-    def loss_fn(model: TransformerModel, batch, rngs: nnx.Rngs):
-        # TODO: do I need to mask anything?
-        logits = model(batch['inputs'], rngs=rngs, deterministic=False)
+    def loss_fn(model: TransformerModel, batch):#, rngs: nnx.Rngs):
+        logits = model(batch['inputs'], deterministic=False)
         loss = optax.softmax_cross_entropy(
             logits=logits, labels=batch['targets']
         ).mean()
@@ -139,11 +114,10 @@ if __name__ == '__main__':
     def train_step(model: TransformerModel,
                    optimizer: nnx.Optimizer,
                    metrics: nnx.MultiMetric,
-                   batch, 
-                   rngs: nnx.Rngs):
+                   batch):
         
-        grad_fn = nnx.value_and_grad(loss_fn, argnums=0, has_aux=True)
-        (loss, logits), grads = grad_fn(model, batch, rngs=rngs)
+        grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)
+        (loss, logits), grads = grad_fn(model, batch)
 
         # convert one-hot to class indices for the metric
         # TODO: dtype here?
@@ -198,7 +172,7 @@ if __name__ == '__main__':
     fig.show()
 
     for step, batch in enumerate(train_ds.as_numpy_iterator()):
-        train_step(model, optimizer, metrics, batch, rngs)
+        train_step(model, optimizer, metrics, batch)
 
         if step > 0 and (step % eval_every == 0 or step == train_steps - 1):  # One training epoch has passed.
         # Log the training metrics.
