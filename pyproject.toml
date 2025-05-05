@@ -10,6 +10,7 @@ dependencies = [
     "jupyter>=1.1.1",
     "matplotlib>=3.10.1",
     "optax>=0.2.4",
+    "ott-jax>=0.5.0",
     "pandas>=2.2.3",
     "polars>=1.27.0",
     "pyarrow>=20.0.0",
