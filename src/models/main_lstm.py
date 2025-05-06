@@ -5,6 +5,7 @@ import tensorflow as tf
 from typing import Callable
 import optax 
 import matplotlib.pyplot as plt
+import pandas as pd 
 
 # TODO: n_layers?
 
@@ -34,7 +35,7 @@ if __name__ == '__main__':
     momentum = 0.9
     train_ratio = .75
     batch_size = 32 
-    train_steps = 5000
+    train_steps = 2500
     eval_every = 100
     shuffle_buffer_size = 256
 
@@ -103,6 +104,17 @@ if __name__ == '__main__':
     ax1.set_title("Loss")
     ax2.set_title("Accuracy")
 
+    fig.suptitle("LSTM Training Metrics", fontsize=16)
+
+    # 2) Set titles and axis labels on each subplot:
+    ax1.set_title("Loss")
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Loss")
+
+    ax2.set_title("Accuracy")
+    ax2.set_xlabel("Epoch")
+    ax2.set_ylabel("Accuracy")
+
     # two empty Line2D objects we’ll update on every eval
     train_loss_line,  = ax1.plot([], [], label="train_loss")
     test_loss_line,   = ax1.plot([], [], label="test_loss")
@@ -152,5 +164,15 @@ if __name__ == '__main__':
             fig.canvas.draw_idle()      # queue a repaint
             fig.canvas.flush_events()   # force the GUI event loop to process it
             plt.pause(0.001)            # tiny sleep keeps things responsive
+
+        epochs = list(range(1, len(metrics_history['train_accuracy']) + 1))
+        df = pd.DataFrame({
+            'epoch': epochs,
+            'train_accuracy': metrics_history['train_accuracy'],
+            'test_accuracy':  metrics_history['test_accuracy'],
+        })
+
+        # write it out
+        df.to_csv("lstm_accuracy.csv", index=False)
 
     

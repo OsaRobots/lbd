@@ -73,7 +73,7 @@ if __name__ == '__main__':
     momentum = 0.9
     train_ratio = .75
     batch_size = 32 
-    train_steps = 500
+    train_steps = 5000
     eval_every = 5
     shuffle_buffer_size = 1024
 
@@ -136,60 +136,58 @@ if __name__ == '__main__':
     train_ds = train_ds.batch(batch_size, drop_remainder=True).take(train_steps).prefetch(1)
     test_ds = test_ds.batch(batch_size, drop_remainder=True).prefetch(1)
 
-    plt.ion() # interactive mode for now 
+    plt.ion()  # interactive mode
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+
+    # 1) Add a big title for the whole figure:
+    fig.suptitle("MLP Training Metrics", fontsize=16)
+
+    # 2) Set titles and axis labels on each subplot:
     ax1.set_title("Loss")
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Loss")
+
     ax2.set_title("Accuracy")
+    ax2.set_xlabel("Epoch")
+    ax2.set_ylabel("Accuracy")
 
     # two empty Line2D objects we’ll update on every eval
-    train_loss_line,  = ax1.plot([], [], label="train_loss")
-    test_loss_line,   = ax1.plot([], [], label="test_loss")
-    train_acc_line,   = ax2.plot([], [], label="train_accuracy")
-    test_acc_line,    = ax2.plot([], [], label="test_accuracy")
+    train_loss_line, = ax1.plot([], [], label="train_loss")
+    test_loss_line,  = ax1.plot([], [], label="test_loss")
+    train_acc_line,  = ax2.plot([], [], label="train_accuracy")
+    test_acc_line,   = ax2.plot([], [], label="test_accuracy")
 
     ax1.legend()
     ax2.legend()
 
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0, 1, 0.95])  # leave room for suptitle
     fig.show()
 
     for step, batch in enumerate(train_ds.as_numpy_iterator()):
         train_step(model, optimizer, metrics, batch)
 
-        if step > 0 and (step % eval_every == 0 or step == train_steps - 1):  # One training epoch has passed.
-        # Log the training metrics.
-            for metric, value in metrics.compute().items():  # Compute the metrics.
-                metrics_history[f'train_{metric}'].append(value)  # Record the metrics.
-            metrics.reset()  # Reset the metrics for the test set.
+        if step > 0 and (step % eval_every == 0 or step == train_steps - 1):
+            # … compute & update metrics_history as before …
 
-        # Compute the metrics on the test set after each training epoch.
-            for test_batch in test_ds.as_numpy_iterator():
-                eval_step(model, metrics, test_batch)
-
-        # Log the test metrics.
-            for metric, value in metrics.compute().items():
-                metrics_history[f'test_{metric}'].append(value)
-            metrics.reset()  # Reset the metrics for the next training epoch.
-
-        # Plot loss and accuracy in subplots
             # ----- update stored y‑data -----
-            train_loss_line.set_data(range(len(metrics_history['train_loss'])),
-                                    metrics_history['train_loss'])
-            test_loss_line.set_data(range(len(metrics_history['test_loss'])),
-                                    metrics_history['test_loss'])
-            train_acc_line.set_data(range(len(metrics_history['train_accuracy'])),
-                                    metrics_history['train_accuracy'])
-            test_acc_line.set_data(range(len(metrics_history['test_accuracy'])),
-                                metrics_history['test_accuracy'])
+            epochs = list(range(1, len(metrics_history['train_loss']) + 1))
+            train_loss_line.set_data(epochs, metrics_history['train_loss'])
+            test_loss_line.set_data( epochs, metrics_history['test_loss'])
+            train_acc_line.set_data(  epochs, metrics_history['train_accuracy'])
+            test_acc_line.set_data(   epochs, metrics_history['test_accuracy'])
 
             # rescale the axes so new points are visible
             for ax in (ax1, ax2):
-                ax.relim()              # recompute limits
-                ax.autoscale_view()     # apply them
+                ax.relim()
+                ax.autoscale_view()
 
-            fig.canvas.draw_idle()      # queue a repaint
-            fig.canvas.flush_events()   # force the GUI event loop to process it
-            plt.pause(0.001)            # tiny sleep keeps things responsive
+            fig.canvas.draw_idle()
+            fig.canvas.flush_events()
+            plt.pause(0.001)
+
+            # 3) Save out the figure for this epoch:
+            current_epoch = len(metrics_history['train_loss'])
+            fig.savefig(f"mlp_metrics_epoch_{current_epoch:03d}.png", dpi=150)
 
 
 

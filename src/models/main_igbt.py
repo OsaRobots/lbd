@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 from ott.geometry import geometry
 from ott.problems.linear import linear_problem
 from ott.solvers.linear import sinkhorn
+import pandas as pd 
 
 class CostNet(nnx.Module):
     def __init__(self, in_dims, hidden_dims, out_dims, rngs: nnx.Rngs):
@@ -130,7 +131,7 @@ if __name__ == '__main__':
 
     train_ratio = .75
     batch_size = 32
-    train_steps = 5000
+    train_steps = 2500
     eval_every = 100
     shuffle_buf = 256
 
@@ -153,6 +154,17 @@ if __name__ == '__main__':
     train_acc_ln  ,= ax2.plot([], [], label="train_acc")
     test_acc_ln   ,= ax2.plot([], [], label="test_acc")
     ax1.legend(); ax2.legend(); fig.tight_layout(); fig.show()
+
+    fig.suptitle("IGBT Training Metrics", fontsize=16)
+
+    # 2) Set titles and axis labels on each subplot:
+    ax1.set_title("Loss")
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Loss")
+
+    ax2.set_title("Accuracy")
+    ax2.set_xlabel("Epoch")
+    ax2.set_ylabel("Accuracy")
 
     metrics_hist = {k: [] for k in
                     ['train_loss','train_accuracy','test_loss','test_accuracy']}
@@ -200,4 +212,14 @@ if __name__ == '__main__':
                 ax.relim(); ax.autoscale_view()
             fig.canvas.draw_idle(); fig.canvas.flush_events(); plt.pause(0.001)
 
-    print("Finished training.")
+    # print("Finished training.")
+
+    epochs = list(range(1, len(metrics_hist['train_accuracy']) + 1))
+    df = pd.DataFrame({
+            'epoch': epochs,
+            'train_accuracy': metrics_hist['train_accuracy'],
+            'test_accuracy':  metrics_hist['test_accuracy'],
+        })
+
+        # write it out
+    df.to_csv("igbt_accuracy.csv", index=False)
