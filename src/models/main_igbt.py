@@ -2,6 +2,7 @@
 from functools import partial 
 from flax import nnx
 import jax 
+from jax import lax
 from typing import Dict, Tuple 
 from jax import random, numpy as jnp
 import tensorflow as tf 
@@ -18,53 +19,93 @@ class CostNet(nnx.Module):
             nnx.Linear(hidden_dims, hidden_dims, rngs=rngs), nnx.relu,
             nnx.Linear(hidden_dims, out_dims, rngs=rngs),               # K costs
         )
-        self.eps_gamma = nnx.Param(value=1.)
-        self.eps_theta = nnx.Param(value=1.)
-        self.beta = nnx.Param(value=1.)
+        # self.eps_gamma = nnx.Param(value=1.)
+        # self.eps_theta = nnx.Param(value=1.)
+        # self.beta = nnx.Param(value=1.)
+        self.eps_gamma = 0.05       # static, safe
+        self.eps_theta = 0.10
+        self.beta      = 10.0
 
-    def __call__(self, xs):              # xs: (B, in_dims)
-        return self.mlp(xs)              # (B, K)        
-    
-    def sinkhorn_posterior(self, costs, prior, iters=50):
-        eps_p = self.eps_gamma.value
-        eps_theta = self.eps_theta.value
-
-        g = geometry.Geometry(cost_matrix=costs, epsilon=eps_p)
-        tau_b = 1.0 - eps_theta / (eps_theta + eps_p)
-        row_mass = jnp.ones(costs.shape[0])               # (B,)
-        prob = linear_problem.LinearProblem(g,
-                                            a=row_mass,
-                                            b=prior,
-                                            tau_a=1.0,
-                                            tau_b=tau_b)
-        gamma = sinkhorn.Sinkhorn(max_iterations=iters, threshold=1e-4)(prob).matrix
-        return gamma / gamma.sum(axis=1, keepdims=True)
+    def __call__(self, xs):                  
+        return self.mlp(xs)                 
 
     def loss(self, batch):
-        costs = self(batch['inputs'])
-        posterior = self.sinkhorn_posterior(costs, batch['prior'])
-        log_pi = jax.nn.log_softmax(self.beta * posterior, axis=-1)
-        loss = -(log_pi * batch["targets"]).sum(axis=-1).mean()
-        return loss, posterior
+        """
+        batch['inputs']  : (B, T, in_dim)
+        batch['targets'] : (B, T, K)   one‑hot
+        batch['prior']   : (B, K)      θ₀  (posterior from previous sequence)
+        """
+        costs_seq = self(batch["inputs"])          # (B, T, K)
+
+        # put time axis first so lax.scan iterates over it
+        costs_TBK   = jnp.swapaxes(costs_seq, 0, 1)      # (T, B, K)
+        targets_TBK = jnp.swapaxes(batch["targets"], 0, 1)
+
+        def step(theta_prev, inp):
+            costs_t, targ_t = inp                      # each (B, K)
+            post_t = self.sinkhorn_posterior(costs_t, theta_prev)
+            log_pi = jax.nn.log_softmax(self.beta * post_t, axis=-1)
+            nll_t  = -(log_pi * targ_t).sum(axis=-1)   # (B,)
+            return post_t, (nll_t, post_t)
+
+        _, (nlls, posts) = lax.scan(
+            step,
+            batch["prior"],                           # θ₀  (B, K)
+            (costs_TBK, targets_TBK)                  # sequence inputs
+        )
+
+        loss  = nlls.mean()           # averaged over batch & time
+        final = posts[-1]             # θ_T  (B, K)
+        return loss, final   
+    
+    def sinkhorn_posterior(self, costs, prior, iters=50):
+        # ── 1.  constants, not tracers  ──────────────────────────
+        # eps_p     = float(self.eps_gamma.value)  
+        # eps_theta = float(self.eps_theta.value)   
+        eps_p = self.eps_gamma
+        eps_theta = self.eps_theta
+        tau_b = 1.0 - eps_theta / (eps_theta + eps_p)
+
+        # ── 2.  vmap one Sinkhorn per row  ───────────────────────
+        def single_row(cost_row, prior_row):
+            g = geometry.Geometry(cost_matrix=cost_row[None, :], epsilon=eps_p)
+            prob = linear_problem.LinearProblem(
+                g,
+                a=jnp.array([1.0]),          # row mass
+                b=prior_row,                 # (K,)
+                tau_a=1.0,
+                tau_b=tau_b,                 # python float → static
+            )
+            gamma = sinkhorn.Sinkhorn(max_iterations=iters, threshold=1e-4)(prob).matrix
+            return gamma[0] / gamma.sum()            # (K,)
+
+        return jax.vmap(single_row)(costs, prior)   # (B,K)
 
 @nnx.jit
-def train_step(model: CostNet, optimizer: nnx.Optimizer, metrics: nnx.MultiMetric, batch):
-    
-    grad_fn = nnx.value_and_grad(model.loss, has_aux=True)
-    (loss, posterior), grads = grad_fn(batch)
-    labels_idx = jnp.argmax(batch['targets'], axis=-1)
-    # jax.debug.print("labels look like {labels_idx}", labels_idx=labels_idx)
-    metrics.update(loss=loss,
-                    logits=posterior,
-                    labels=labels_idx)      
-    
+def train_step(model: CostNet,
+               optimizer: nnx.Optimizer,
+               metrics: nnx.MultiMetric,
+               batch):
+
+    # --- compute grads wrt the model ------------------------
+    def loss_fn(m):                     # m is CostNet
+        return m.loss(batch)            # returns (loss, aux)
+
+    (loss, posterior_T), grads = nnx.value_and_grad(
+        loss_fn, has_aux=True)(model)
+
+    # --- metrics -------------------------------------------
+    last_labels = jnp.argmax(batch["targets"][:, -1, :], axis=-1)
+    metrics.update(loss=loss, logits=posterior_T, labels=last_labels)
+
+    # --- optax update (grads now numeric) ------------------
     optimizer.update(grads)
-    return posterior 
+    return posterior_T
 
 @nnx.jit
 def eval_step(model: CostNet, metrics: nnx.MultiMetric, batch):
     loss, logits = model.loss(batch)
-    labels_idx = jnp.argmax(batch['targets'], axis=-1) # is -1 sill fine? should be...
+    labels_idx = jnp.argmax(batch['targets'][:, -1, :], axis=-1)  # (B,)
     metrics.update(loss=loss, logits=logits, labels=labels_idx)  # In-place updates.
 
 if __name__ == '__main__':
@@ -141,7 +182,7 @@ if __name__ == '__main__':
                     'targets': jnp.asarray(test_raw['targets']),
                     'prior'  : theta_prev,              # any prior works for eval
                 }
-                eval_step(optim, metrics, test_b)
+                eval_step(model, metrics, test_b)
             for m,v in metrics.compute().items():
                 metrics_hist[f'test_{m}'].append(v)
             metrics.reset()
