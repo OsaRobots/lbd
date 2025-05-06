@@ -36,7 +36,7 @@ class CostNet(nnx.Module):
         batch['targets'] : (B, T, K)   one‑hot
         batch['prior']   : (B, K)      θ₀  (posterior from previous sequence)
         """
-        costs_seq = self(batch["inputs"])          # (B, T, K)
+        costs_seq = self(batch["inputs"])          
 
         # put time axis first so lax.scan iterates over it
         costs_TBK   = jnp.swapaxes(costs_seq, 0, 1)      # (T, B, K)
@@ -60,27 +60,25 @@ class CostNet(nnx.Module):
         return loss, final   
     
     def sinkhorn_posterior(self, costs, prior, iters=50):
-        # ── 1.  constants, not tracers  ──────────────────────────
-        # eps_p     = float(self.eps_gamma.value)  
-        # eps_theta = float(self.eps_theta.value)   
+        # TODO: figure out how to not have these always be constants 
         eps_p = self.eps_gamma
         eps_theta = self.eps_theta
         tau_b = 1.0 - eps_theta / (eps_theta + eps_p)
 
-        # ── 2.  vmap one Sinkhorn per row  ───────────────────────
+        # vmap one Sinkhorn per row 
         def single_row(cost_row, prior_row):
             g = geometry.Geometry(cost_matrix=cost_row[None, :], epsilon=eps_p)
             prob = linear_problem.LinearProblem(
                 g,
-                a=jnp.array([1.0]),          # row mass
-                b=prior_row,                 # (K,)
+                a=jnp.array([1.0]),          
+                b=prior_row,                
                 tau_a=1.0,
-                tau_b=tau_b,                 # python float → static
+                tau_b=tau_b,                 
             )
             gamma = sinkhorn.Sinkhorn(max_iterations=iters, threshold=1e-4)(prob).matrix
-            return gamma[0] / gamma.sum()            # (K,)
+            return gamma[0] / gamma.sum()            
 
-        return jax.vmap(single_row)(costs, prior)   # (B,K)
+        return jax.vmap(single_row)(costs, prior)   
 
 @nnx.jit
 def train_step(model: CostNet,
