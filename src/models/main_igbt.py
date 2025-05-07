@@ -43,20 +43,20 @@ class CostNet(nnx.Module):
         targets_TBK = jnp.swapaxes(batch["targets"], 0, 1)
 
         def step(theta_prev, inp):
-            costs_t, targ_t = inp                      # each (B, K)
+            costs_t, targ_t = inp                      
             post_t = self.sinkhorn_posterior(costs_t, theta_prev)
             log_pi = jax.nn.log_softmax(self.beta * post_t, axis=-1)
-            nll_t  = -(log_pi * targ_t).sum(axis=-1)   # (B,)
+            nll_t  = -(log_pi * targ_t).sum(axis=-1)  
             return post_t, (nll_t, post_t)
 
         _, (nlls, posts) = lax.scan(
             step,
-            batch["prior"],                           # θ₀  (B, K)
-            (costs_TBK, targets_TBK)                  # sequence inputs
+            batch["prior"],                           
+            (costs_TBK, targets_TBK)                  
         )
 
-        loss  = nlls.mean()           # averaged over batch & time
-        final = posts[-1]             # θ_T  (B, K)
+        loss  = nlls.mean()           
+        final = posts[-1]            
         return loss, final   
     
     def sinkhorn_posterior(self, costs, prior, iters=50):
@@ -86,26 +86,23 @@ def train_step(model: CostNet,
                metrics: nnx.MultiMetric,
                batch):
 
-    # --- compute grads wrt the model ------------------------
-    def loss_fn(m):                     # m is CostNet
-        return m.loss(batch)            # returns (loss, aux)
+    def loss_fn(m):                     
+        return m.loss(batch)           
 
     (loss, posterior_T), grads = nnx.value_and_grad(
         loss_fn, has_aux=True)(model)
 
-    # --- metrics -------------------------------------------
     last_labels = jnp.argmax(batch["targets"][:, -1, :], axis=-1)
     metrics.update(loss=loss, logits=posterior_T, labels=last_labels)
 
-    # --- optax update (grads now numeric) ------------------
     optimizer.update(grads)
     return posterior_T
 
 @nnx.jit
 def eval_step(model: CostNet, metrics: nnx.MultiMetric, batch):
     loss, logits = model.loss(batch)
-    labels_idx = jnp.argmax(batch['targets'][:, -1, :], axis=-1)  # (B,)
-    metrics.update(loss=loss, logits=logits, labels=labels_idx)  # In-place updates.
+    labels_idx = jnp.argmax(batch['targets'][:, -1, :], axis=-1)  
+    metrics.update(loss=loss, logits=logits, labels=labels_idx)  
 
 if __name__ == '__main__':
     rngs          = nnx.Rngs(0)
@@ -170,27 +167,24 @@ if __name__ == '__main__':
     theta_prev = jnp.full((batch_size, K), 1/K)            
 
     for step, raw in enumerate(train_ds.as_numpy_iterator()):
-        batch = { 'inputs' : jnp.asarray(raw['inputs']),    # shape (B,62)
-                'targets': jnp.asarray(raw['targets']),   # one‑hot (B,K)
-                'prior'  : theta_prev }                   # (B,K)
+        batch = { 'inputs' : jnp.asarray(raw['inputs']),    
+                'targets': jnp.asarray(raw['targets']),   
+                'prior'  : theta_prev }                   
 
         posterior = train_step(model, optim, metrics, batch)
 
-        # ---- carry posterior forward as next prior (NO grad) ----
         theta_prev = posterior
 
-        # ---- periodic test & plot (unchanged) -------------------
         if step>0 and (step%eval_every==0 or step==train_steps-1):
             for m,v in metrics.compute().items():
                 metrics_hist[f'train_{m}'].append(v)
             metrics.reset()
 
-            # test set
             for test_raw in test_ds.as_numpy_iterator():
                 test_b = {
                     'inputs':  jnp.asarray(test_raw['inputs']),
                     'targets': jnp.asarray(test_raw['targets']),
-                    'prior'  : theta_prev,              # any prior works for eval
+                    'prior'  : theta_prev,             
                 }
                 eval_step(model, metrics, test_b)
             for m,v in metrics.compute().items():
